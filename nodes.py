@@ -1,101 +1,126 @@
 import os
-import random
-
-import folder_paths
-from PIL import Image
-import numpy as np
-import torch
 import hashlib
+import torch
+import folder_paths
 
-# set the models directory
+# 1) Basis-Verzeichnis & Suffix einrichten
 if "conditionings" not in folder_paths.folder_names_and_paths:
     current_paths = [os.path.join(folder_paths.models_dir, "conditionings")]
 else:
     current_paths, _ = folder_paths.folder_names_and_paths["conditionings"]
 folder_paths.folder_names_and_paths["conditionings"] = (current_paths, ".bin")
 
+COND_BASE_DIR = folder_paths.folder_names_and_paths["conditionings"][0][0]
+COND_SUFFIX   = folder_paths.folder_names_and_paths["conditionings"][1]
+
+# 2) SaveConditioning Node
 class SaveConditioning:
     def __init__(self):
-        self.output_dir = folder_paths.get_output_directory()
+        self.base_dir = COND_BASE_DIR
 
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": 
-                    {"conditionings": ("CONDITIONING", ),},
-                }
+        return {
+            "required": {
+                "pos":      ("CONDITIONING",),
+                "neg":      ("CONDITIONING",),
+                "filename": ("STRING", {"default": "my_conditioning"})
+            }
+        }
 
     RETURN_TYPES = ()
-    FUNCTION = "save_conditioning"
-    OUTPUT_NODE = True
-    CATEGORY = "endman100"
+    FUNCTION     = "save_conditioning"
+    OUTPUT_NODE  = True
+    CATEGORY     = "endman100"
 
-    def save_conditioning(self, conditionings): # conditionings : [[text, {"pooled_output"}]...]
-        results = list()
-        for (batch_number, conditioning) in enumerate(conditionings):
-            save_path = os.path.join(self.output_dir, f"{batch_number:05}_conditionings.bin")
-            print(conditioning)
-            print(f"conditioning[0].shape:{conditioning[0].shape}, save_path:{save_path}")
-            for key, value in conditioning[1].items():
-                if(type(value) == torch.Tensor):
-                    print(f"key:{key}, type:{type(value)}, shape:{value.shape}")
-                else:
-                    print(f"key:{key}, type:{type(conditioning[1][key])}")
+    def save_conditioning(self, pos, neg, filename):
+        # jeweils erstes Element holen
+        pos_cond = pos[0]
+        neg_cond = neg[0]
+        # Pfad + Unterordner erlauben
+        save_path = os.path.join(self.base_dir, f"{filename}{COND_SUFFIX}")
+        save_dir  = os.path.dirname(save_path)
+        if save_dir and not os.path.exists(save_dir):
+            os.makedirs(save_dir, exist_ok=True)
 
-            if(hasattr(conditioning[0], "addit_embeds")):
-               for key, value in conditioning[0].addit_embeds.items():
-                    if(type(value) == torch.Tensor):
-                        print(f"key:{key}, type:{type(value)}, shape:{value.shape}")
-                    else:
-                        print(f"key:{key}, type:{type(value)}")
+        # Optional: Debug-Ausgaben
+        print(">> Saving POS and NEG conditioning:")
+        print(f" - pos.shape: {pos_cond[0].shape}, neg.shape: {neg_cond[0].shape}")
+        print(f" - save_path: {save_path}")
 
-            torch.save(conditioning, save_path)
+        # In Datei packen
+        packed = {
+            "pos": pos_cond,
+            "neg": neg_cond
+        }
+        torch.save(packed, save_path)
 
-        return { "ui": { "conditionings": results } }
+        return {"ui": {"conditionings": []}}
 
-class LoadContditioning():
+# 3) LoadConditioning Node
+class LoadConditioning:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": { "conditioning": (folder_paths.get_filename_list("conditionings"), )}}
+        # alle .bin-Dateien rekursiv sammeln
+        files = []
+        for root, dirs, fns in os.walk(COND_BASE_DIR):
+            for fn in fns:
+                if fn.endswith(COND_SUFFIX):
+                    full = os.path.join(root, fn)
+                    rel  = os.path.relpath(full, COND_BASE_DIR)
+                    files.append(rel)
+        return {"required": {"conditioning": (tuple(files),)}}
 
-    CATEGORY = "endman100"
-    RETURN_TYPES = ("CONDITIONING", )
-    FUNCTION = "load_conditioning"
+    CATEGORY     = "endman100"
+    RETURN_TYPES = ("CONDITIONING", "CONDITIONING")
+    FUNCTION     = "load_conditioning"
 
     def load_conditioning(self, conditioning):
-        conditioning_path = folder_paths.get_full_path("conditionings", conditioning)
-        conditioning_list = torch.load(conditioning_path)
-        conditioning_list[0] = conditioning_list[0].cpu()
-        for key, value in conditioning_list[1].items():
-            if(type(value) == torch.Tensor):
-                conditioning_list[1][key] = value.cpu()
-        if(hasattr(conditioning_list[0], "addit_embeds")):
-            for key, value in conditioning_list[0].addit_embeds.items():
-                if(type(value) == torch.Tensor):
-                    conditioning_list[0].addit_embeds[key] = value.cpu()
-        return ([conditioning_list], )
+        path = os.path.join(COND_BASE_DIR, conditioning)
+        data = torch.load(path)
+
+        # Tensoren auf CPU
+        pos, neg = data["pos"], data["neg"]
+        pos[0] = pos[0].cpu()
+        neg[0] = neg[0].cpu()
+        for key, v in pos[1].items():
+            if isinstance(v, torch.Tensor):
+                pos[1][key] = v.cpu()
+        for key, v in neg[1].items():
+            if isinstance(v, torch.Tensor):
+                neg[1][key] = v.cpu()
+        # ggf. addit_embeds behandeln
+        for cond in (pos, neg):
+            if hasattr(cond[0], "addit_embeds"):
+                for k, v in cond[0].addit_embeds.items():
+                    if isinstance(v, torch.Tensor):
+                        cond[0].addit_embeds[k] = v.cpu()
+
+        # zwei Outputs: pos und neg
+        return ([pos], [neg])
 
     @classmethod
     def IS_CHANGED(s, conditioning):
-        conditioning_path = folder_paths.get_full_path("conditionings", conditioning)
+        path = os.path.join(COND_BASE_DIR, conditioning)
         m = hashlib.sha256()
-        with open(conditioning_path, 'rb') as f:
+        with open(path, "rb") as f:
             m.update(f.read())
         return m.digest().hex()
 
     @classmethod
     def VALIDATE_INPUTS(s, conditioning):
-        conditioning_path = folder_paths.get_full_path("conditionings", conditioning)
-        if not os.path.exists(conditioning_path):
-            return "Invalid conditioning file: {}".format(conditioning_path)
+        path = os.path.join(COND_BASE_DIR, conditioning)
+        if not os.path.exists(path):
+            return f"Invalid conditioning file: {path}"
         return True
-    
 
+# 4) Registrierung
 NODE_CLASS_MAPPINGS = {
     "SaveConditioning": SaveConditioning,
-    "LoadContditioning": LoadContditioning,
+    "LoadConditioning": LoadConditioning,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Save Conditioning": "SaveConditioning",
-    "Load Contditioning": "LoadContditioning"
+    "Load Conditioning": "LoadConditioning"
 }
