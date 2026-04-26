@@ -6,17 +6,23 @@ from PIL import Image
 import numpy as np
 import torch
 import hashlib
+from comfy.cli_args import args
+from pathlib import Path
 
 # set the models directory
-if "conditionings" not in folder_paths.folder_names_and_paths:
-    current_paths = [os.path.join(folder_paths.models_dir, "conditionings")]
+
+if args.base_directory:
+    base_path = os.path.join(Path(os.path.abspath(args.base_directory)).parent.parent, "models")
 else:
-    current_paths, _ = folder_paths.folder_names_and_paths["conditionings"]
-folder_paths.folder_names_and_paths["conditionings"] = (current_paths, ".bin")
+    base_path = os.path.join(Path(os.path.dirname(os.path.realpath(__file__))).parent.parent, "models")
+
+os.makedirs(os.path.join(base_path, "conditionings"), exist_ok=True)
+
+folder_paths.folder_names_and_paths["conditionings"] = ([os.path.join(base_path, "conditionings")], [".bin"])
 
 class SaveConditioning:
     def __init__(self):
-        self.output_dir = folder_paths.get_output_directory()
+        self.output_dir = os.path.join(base_path, "conditionings")
 
     @classmethod
     def INPUT_TYPES(s):
