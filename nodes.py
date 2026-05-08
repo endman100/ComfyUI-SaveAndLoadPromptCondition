@@ -8,6 +8,7 @@ import torch
 import hashlib
 from comfy.cli_args import args
 from pathlib import Path
+import time
 
 # set the models directory
 
@@ -36,9 +37,10 @@ class SaveConditioning:
     CATEGORY = "endman100"
 
     def save_conditioning(self, conditionings): # conditionings : [[text, {"pooled_output"}]...]
+        file_name_unix_time = str(time.time()) + "_conditionings.bin"
         results = list()
         for (batch_number, conditioning) in enumerate(conditionings):
-            save_path = os.path.join(self.output_dir, f"{batch_number:05}_conditionings.bin")
+            save_path = os.path.join(self.output_dir, file_name_unix_time)
             print(conditioning)
             print(f"conditioning[0].shape:{conditioning[0].shape}, save_path:{save_path}")
             for key, value in conditioning[1].items():
